@@ -1,0 +1,8 @@
+name: pr
+on: pull_request
+permissions: {}
+jobs:
+  security-review:
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 1

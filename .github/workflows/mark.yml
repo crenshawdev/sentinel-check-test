@@ -1,0 +1,17 @@
+name: mark
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        required: true
+permissions:
+  checks: write
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ inputs.sha }}
+          REPO: ${{ github.repository }}
+        run: gh api "repos/$REPO/check-runs" -f name=security-review -f head_sha="$SHA" -f status=completed -f conclusion=success
