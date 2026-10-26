@@ -1,2 +1,2 @@
-#!/bin/sh
-exit 0
+#!/usr/bin/env bash
+echo "slow stub"; sleep 90
