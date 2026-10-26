@@ -28,13 +28,14 @@ jobs:
     environment: sentinel-review-app
     permissions:
       actions: read
+      contents: read
     steps:
       # The review job of that run has to have passed, and the pull request's
       # fast.yml and .sentinel pin have to be the default branch's, so the
       # review that passed is the default branch's review. Skipped (a
-      # Dependabot pull request), cancelled (a newer push), failed, or a pull
-      # request that changes either one marks nothing; that one is reviewed
-      # with gh workflow run fast.yml -f pr=<number>.
+      # Dependabot pull request), cancelled (a newer push), failed, a pull
+      # request that changes either one, or one aimed at another branch marks
+      # nothing; that one is reviewed with gh workflow run fast.yml -f pr=<n>.
       - name: Check the review passed
         id: review
         env:
@@ -46,14 +47,26 @@ jobs:
           conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/jobs" \
               --jq '[.jobs[] | select(.name == "review") | .conclusion][0] // "none"')
           # The blob of fast.yml, and the commit (or tree) .sentinel points at.
+          # A lookup that fails fails the comparison: two errors never match.
           pinned() {
-              printf '%s ' "$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/fast.yml?ref=$1" --jq .sha || echo missing)"
-              gh api "repos/$GITHUB_REPOSITORY/git/trees/$1" --jq '[.tree[] | select(.path == ".sentinel") | .sha][0] // "missing"' || echo missing
+              local blob pin
+              blob=$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/fast.yml?ref=$1" --jq .sha) || return 1
+              pin=$(gh api "repos/$GITHUB_REPOSITORY/git/trees/$1" --jq '[.tree[] | select(.path == ".sentinel") | .sha][0] // ""') || return 1
+              [[ -n $blob && -n $pin ]] || return 1
+              echo "$blob $pin"
           }
-          ours=$(pinned "$MAIN")
-          theirs=$(pinned "$SHA")
-          same=$([[ $ours == "$theirs" ]] && echo true || echo false)
-          [[ $same == true ]] || echo "fast.yml or .sentinel differs from $MAIN's ($theirs against $ours), so this review is not the default branch's"
+          same=false
+          if ours=$(pinned "$MAIN") && theirs=$(pinned "$SHA") && [[ $ours == "$theirs" ]]; then
+              same=true
+          fi
+          [[ $same == true ]] || echo "fast.yml or .sentinel differs from $MAIN's, or could not be read, so this review is not the default branch's"
+          # Reviewed against the default branch only: a review against
+          # another base would still mark the commit after a retarget.
+          bases=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN" --jq '[.pull_requests[].base.ref] | unique | join(",")')
+          if [[ $bases != "$MAIN" ]]; then
+              echo "the pull request's base is '$bases', not $MAIN, so nothing is marked"
+              same=false
+          fi
           echo "review job: $conclusion"
           echo "passed=$([[ $conclusion == success && $same == true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - name: Get the review app's token

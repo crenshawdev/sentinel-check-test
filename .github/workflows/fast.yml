@@ -101,7 +101,10 @@ jobs:
     # dependabot job marks them. There is no `needs: mechanical`, so a failing
     # gate, such as a new advisory against a dependency already in use, does
     # not skip the review.
-    if: github.event_name == 'pull_request' && github.server_url == 'https://github.com' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
+    # Aimed at the default branch only, so a review that passed was a review
+    # against it: review-mark.yml marks nothing else, and a retarget runs no
+    # new review.
+    if: github.event_name == 'pull_request' && github.server_url == 'https://github.com' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]' && github.base_ref == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -128,6 +131,15 @@ jobs:
       - name: Install age
         if: vars.SENTINEL_REVIEW_AGE_RECIPIENT != ''
         run: sudo apt-get update -q && sudo apt-get install -y -q age
+      # The reviewer judges the change against the base branch's threat
+      # model, not one the pull request rewrote. The diff still shows any
+      # change to it.
+      - name: Use the base branch's threat model
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          rm -f THREAT-MODEL.md
+          git show "origin/$BASE_REF:THREAT-MODEL.md" > THREAT-MODEL.md 2>/dev/null || rm -f THREAT-MODEL.md
       - name: Review the diff
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -240,8 +252,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ inputs.pr }}
+          MAIN: ${{ github.event.repository.default_branch }}
         run: |
           base=$(gh pr view "$PR" -R "$GITHUB_REPOSITORY" --json baseRefName -q .baseRefName)
+          # Reviewed against the default branch only: a review against another
+          # base would still mark the commit after the pull request is retargeted.
+          if [[ $base != "$MAIN" ]]; then
+              echo "::error::pull request $PR targets $base, not $MAIN; retarget it to $MAIN, then review it"
+              exit 1
+          fi
           echo "base=$base" >> "$GITHUB_OUTPUT"
           echo "sha=$(git -C pr rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           # Opened by Dependabot, the head still the commit checked out, and
@@ -251,8 +270,8 @@ jobs:
           # anyone else pushed is reviewed. No runs at all is reviewed too.
           sha=$(git -C pr rev-parse HEAD)
           author=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '"\(.user.login) \(.head.sha)"')
-          actors=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&event=pull_request" \
-              --jq '[.workflow_runs[] | "\(.actor.login) \(.triggering_actor.login)"] | unique | join(",")')
+          actors=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$sha&event=pull_request" \
+              --jq '.workflow_runs[] | "\(.actor.login) \(.triggering_actor.login)"' | sort -u | paste -sd,)
           if [[ $author == "dependabot[bot] $sha" && $actors == "dependabot[bot] dependabot[bot]" ]]; then
               echo "dependabot=true" >> "$GITHUB_OUTPUT"
           else
