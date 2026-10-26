@@ -29,18 +29,33 @@ jobs:
     permissions:
       actions: read
     steps:
-      # The review job of that run has to have passed. Skipped (a Dependabot
-      # pull request), cancelled (a newer push) or failed marks nothing.
+      # The review job of that run has to have passed, and the pull request's
+      # fast.yml and .sentinel pin have to be the default branch's, so the
+      # review that passed is the default branch's review. Skipped (a
+      # Dependabot pull request), cancelled (a newer push), failed, or a pull
+      # request that changes either one marks nothing; that one is reviewed
+      # with gh workflow run fast.yml -f pr=<number>.
       - name: Check the review passed
         id: review
         env:
           GH_TOKEN: ${{ github.token }}
           RUN: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          MAIN: ${{ github.event.repository.default_branch }}
         run: |
           conclusion=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN/jobs" \
               --jq '[.jobs[] | select(.name == "review") | .conclusion][0] // "none"')
+          # The blob of fast.yml, and the commit (or tree) .sentinel points at.
+          pinned() {
+              printf '%s ' "$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/fast.yml?ref=$1" --jq .sha || echo missing)"
+              gh api "repos/$GITHUB_REPOSITORY/git/trees/$1" --jq '[.tree[] | select(.path == ".sentinel") | .sha][0] // "missing"' || echo missing
+          }
+          ours=$(pinned "$MAIN")
+          theirs=$(pinned "$SHA")
+          same=$([[ $ours == "$theirs" ]] && echo true || echo false)
+          [[ $same == true ]] || echo "fast.yml or .sentinel differs from $MAIN's ($theirs against $ours), so this review is not the default branch's"
           echo "review job: $conclusion"
-          echo "passed=$([[ $conclusion == success ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "passed=$([[ $conclusion == success && $same == true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - name: Get the review app's token
         id: app
         if: steps.review.outputs.passed == 'true'
